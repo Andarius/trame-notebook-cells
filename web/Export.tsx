@@ -1,14 +1,12 @@
 // Under a page's brief: export the page's cells as a standalone HTML report, import an .ipynb's cells.
 import { useEffect, useRef, useState } from "react";
-import { type Block, openInBrowser, type PageDetail, updatePage, usePluginEnabled } from "@trame/web-api";
+import { type Block, Button, openInBrowser, type PageDetail, TextInput, updatePage, usePluginEnabled } from "@trame/web-api";
 import { clearAll, runAll } from "./cell-mode";
 import { createReport, interrupt, type Kernel, listKernels, readNotebook, restart, setPreferredKernel, usePreferredKernel } from "./api";
 import { pageToHtml } from "./export-html";
 import { KernelMenu } from "./KernelMenu";
 import type { CellOutput, PageBlock } from "./types";
 
-const btn = "rounded-md border border-chipline bg-panel px-2 py-[2px] text-[11px] font-medium text-ink-soft hover:border-copper hover:text-copper disabled:opacity-40";
-const ghost = "rounded-md px-2 py-[3px] text-[11.5px] text-ink-soft hover:bg-panel hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent";
 
 // The page's one kernel: every cell runs on it (Jupyter's top-right kernel indicator).
 function KernelBar({ cells }: { cells: number }) {
@@ -48,18 +46,18 @@ function KernelBar({ cells }: { cells: number }) {
         : <span className="px-2">{error ?? "connecting…"}</span>}
       <span className="mx-1 h-4 w-px bg-chipline" />
       {busy
-        ? <button type="button" className={ghost} onClick={stopEverything} disabled={!kernel}>■ Stop</button>
-        : <button type="button" className={ghost} onClick={runEverything} disabled={!kernel || cells === 0}>▶ Run all</button>}
-      <button
-        type="button"
-        className={ghost}
+        ? <Button variant="ghost" size="sm" onClick={stopEverything} disabled={!kernel}>■ Stop</Button>
+        : <Button variant="ghost" size="sm" onClick={runEverything} disabled={!kernel || cells === 0}>▶ Run all</Button>}
+      <Button
+        variant="ghost"
+        size="sm"
         title="restart the kernel: its variables are lost, outputs stay"
         disabled={!kernel}
         onClick={() => kernel && (cancel.current = true, restart(kernel).then(load).catch(fail))}
       >
         ↻ Restart
-      </button>
-      <button type="button" className={ghost} onClick={() => void clearAll()} disabled={cells === 0 || runningAll}>⌫ Clear outputs</button>
+      </Button>
+      <Button variant="ghost" size="sm" onClick={() => void clearAll()} disabled={cells === 0 || runningAll}>⌫ Clear outputs</Button>
       {error && kernels && <span className="text-blocked">{error}</span>}
     </>
   );
@@ -101,25 +99,27 @@ export function NotebookCellsPageHeader({ page, onDone }: { page: PageDetail; on
         {enabled && <KernelBar cells={cells} />}
         <span className="flex-1" />
         <span className="mr-1">{cells} cell{cells === 1 ? "" : "s"}</span>
-        <button type="button" className={btn} onClick={exportHtml} disabled={cells === 0}>Export HTML</button>
+        <Button variant="chip" size="sm" onClick={exportHtml} disabled={cells === 0}>Export HTML</Button>
         {importing
           ? (
             <>
-              <input
-                autoFocus
-                className="w-64 rounded-md border border-line bg-panel px-2 py-[2px] text-[11.5px] text-ink outline-none focus:border-chipline"
-                placeholder="notebook path on the server, e.g. deviations.ipynb"
-                value={path}
-                onChange={(e) => setPath(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && path.trim()) importCells();
-                  if (e.key === "Escape") setImporting(false);
-                }}
-              />
-              <button type="button" className={btn} onClick={importCells} disabled={!path.trim()}>Import</button>
+              <span className="w-64">
+                <TextInput
+                  autoFocus
+                  mono
+                  placeholder="notebook path on the server, e.g. deviations.ipynb"
+                  value={path}
+                  onChange={(e) => setPath(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && path.trim()) importCells();
+                    if (e.key === "Escape") setImporting(false);
+                  }}
+                />
+              </span>
+              <Button variant="chip" size="sm" onClick={importCells} disabled={!path.trim()}>Import</Button>
             </>
           )
-          : <button type="button" className={btn} onClick={() => setImporting(true)}>Import .ipynb</button>}
+          : <Button variant="chip" size="sm" onClick={() => setImporting(true)}>Import .ipynb</Button>}
         {status && <span>{status}</span>}
       </div>
     </div>

@@ -1,6 +1,6 @@
 // The kernel picker: running kernels to switch to or shut down, new ones from a kernel spec or a project folder.
-import { useEffect, useState } from "react";
-import { MENU_LABEL, MenuRow, Popover, timeAgo } from "@trame/web-api";
+import { type ReactNode, useEffect, useState } from "react";
+import { ErrorNote, MENU_LABEL, MenuRow, Popover, timeAgo } from "@trame/web-api";
 import { type Kernel, type KernelSpec, listKernelSpecs, shutdownKernel, startKernel } from "./api";
 import { KernelConfig } from "./KernelConfig";
 
@@ -24,6 +24,28 @@ const Caret = () => (
   <svg width="9" height="9" viewBox="0 0 10 10" className="text-ink-faint" aria-hidden="true">
     <path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
+);
+
+// an action inside a menu row; a span, since the row is a button already
+const RowAction = ({ title, danger, className = "", onClick, children }: {
+  title: string;
+  danger?: boolean;
+  className?: string;
+  onClick: () => void;
+  children: ReactNode;
+}) => (
+  <span
+    role="button"
+    tabIndex={-1}
+    title={title}
+    className={`rounded px-1 text-ink-muted hover:bg-card ${danger ? "hover:text-blocked" : "hover:text-ink"} ${className}`.trim()}
+    onClick={(e) => {
+      e.stopPropagation();
+      onClick();
+    }}
+  >
+    {children}
+  </span>
 );
 
 export function KernelMenu({ kernels, current, onPick, onChanged }: {
@@ -90,18 +112,9 @@ export function KernelMenu({ kernels, current, onPick, onChanged }: {
                 </span>
               </span>
               {k.id === current && <span className="mt-[2px] text-[11px] text-copper">✓</span>}
-              <span
-                role="button"
-                tabIndex={-1}
-                title="shut down this kernel"
-                className="mt-[1px] hidden rounded px-1 text-[11px] text-ink-muted hover:bg-card hover:text-blocked group-hover:block"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  act(`stop ${k.id}`, shutdownKernel(k.id));
-                }}
-              >
+              <RowAction danger title="shut down this kernel" className="mt-[1px] hidden text-[11px] group-hover:block" onClick={() => act(`stop ${k.id}`, shutdownKernel(k.id))}>
                 shut down
-              </span>
+              </RowAction>
             </MenuRow>
           ))}
           <div className="my-1.5 h-px bg-line" />
@@ -116,19 +129,9 @@ export function KernelMenu({ kernels, current, onPick, onChanged }: {
               </span>
               {pending === s.name && <span className="text-[11px] text-ink-faint">starting…</span>}
               {s.project && (
-                <span
-                  role="button"
-                  tabIndex={-1}
-                  title="configure"
-                  className="rounded px-1 text-[12px] text-ink-muted hover:bg-card hover:text-ink"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setOpen(false);
-                    setConfiguring(s);
-                  }}
-                >
+                <RowAction title="configure" className="text-[12px]" onClick={() => (setOpen(false), setConfiguring(s))}>
                   ⚙
-                </span>
+                </RowAction>
               )}
             </MenuRow>
           ))}
@@ -137,7 +140,7 @@ export function KernelMenu({ kernels, current, onPick, onChanged }: {
             <span className="flex-1">From a project folder…</span>
             <span className="text-[11px] text-ink-faint">pyproject.toml · uv</span>
           </MenuRow>
-          {error && <div className="mx-2 mt-1 rounded-md bg-blocked/10 px-2 py-1 text-[11px] text-blocked">{error}</div>}
+          {error && <ErrorNote className="mx-2 mt-1">{error}</ErrorNote>}
         </Popover>
       )}
       {configuring && (

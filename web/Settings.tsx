@@ -1,11 +1,10 @@
 // Notebook cells settings: the Jupyter server the page's cells run on. The token is write-only.
-import { useEffect, useState } from "react";
-import { FIELD_LABEL } from "@trame/web-api";
+import { type ReactNode, useEffect, useState } from "react";
+import { Button, Field, FIELD_LABEL, TextInput } from "@trame/web-api";
 import { ACTIONS } from "./pycharm-keymap";
 import { getSettings, listKernels, readPyCharmKeymap, saveSettings, setCellKeymap, type Settings } from "./api";
 
-const field = "w-full rounded-md border border-line bg-panel px-2.5 py-1.5 text-[12px] text-ink outline-none focus:border-chipline";
-const smallBtn = "rounded-md border border-chipline px-2 py-0.5 text-[11px] text-ink-soft hover:text-ink disabled:opacity-50";
+const Note = ({ children }: { children: ReactNode }) => <span className="text-[11.5px] text-ink-muted">{children}</span>;
 
 export function NotebookCellsSettings() {
   const [s, setS] = useState<Settings | null>(null);
@@ -47,31 +46,27 @@ export function NotebookCellsSettings() {
         Cells run on a Jupyter Server you start yourself, e.g. <code className="font-mono">jupyter lab --no-browser</code>. Paste its URL and token
         (<code className="font-mono">jupyter server list</code>).
       </p>
-      <label className="flex flex-col gap-1">
-        <span className={FIELD_LABEL}>SERVER URL</span>
-        <input className={field} value={url} placeholder="http://127.0.0.1:8888" onChange={(e) => setUrl(e.target.value)} />
-      </label>
-      <label className="flex flex-col gap-1">
-        <span className={FIELD_LABEL}>TOKEN {s?.hasToken ? "(stored — leave blank to keep)" : ""}</span>
-        <input className={field} type="password" value={token} autoComplete="off" onChange={(e) => setToken(e.target.value)} />
-      </label>
+      <Field label="SERVER URL">
+        <TextInput value={url} placeholder="http://127.0.0.1:8888" onChange={(e) => setUrl(e.target.value)} />
+      </Field>
+      <Field label="TOKEN" hint={s?.hasToken && "stored, leave blank to keep"}>
+        <TextInput type="password" value={token} autoComplete="off" onChange={(e) => setToken(e.target.value)} />
+      </Field>
       <div className="flex items-center gap-2">
-        <button type="button" className={smallBtn} onClick={save} disabled={!url.trim()}>Save</button>
-        <button type="button" className={smallBtn} onClick={test} disabled={!s?.enabled}>Test connection</button>
-        {status && <span className="text-[11.5px] text-ink-muted">{status}</span>}
+        <Button size="sm" onClick={save} disabled={!url.trim()}>Save</Button>
+        <Button size="sm" onClick={test} disabled={!s?.enabled}>Test connection</Button>
+        {status && <Note>{status}</Note>}
       </div>
       <div className="flex flex-col gap-1 border-t border-line pt-3">
         <span className={FIELD_LABEL}>EDITOR SHORTCUTS</span>
-        <span className="text-[11.5px] text-ink-muted">
-          {s?.keymap ? `PyCharm keymap: ${s.keymap.name}` : "CodeMirror defaults"}. Running a cell stays on ⇧⏎ and Ctrl+⏎.
-        </span>
+        <Note>{s?.keymap ? `PyCharm keymap: ${s.keymap.name}` : "CodeMirror defaults"}. Running a cell stays on ⇧⏎ and Ctrl+⏎.</Note>
         <div className="flex items-center gap-2">
-          <button type="button" className={smallBtn} onClick={importKeymap} disabled={!s?.enabled}>
+          <Button size="sm" onClick={importKeymap} disabled={!s?.enabled}>
             {s?.keymap ? "Re-import from PyCharm" : "Import from PyCharm"}
-          </button>
-          {s?.keymap && <button type="button" className={smallBtn} onClick={resetKeymap}>Reset</button>}
+          </Button>
+          {s?.keymap && <Button size="sm" onClick={resetKeymap}>Reset</Button>}
         </div>
-        {keyStatus && <span className="text-[11.5px] text-ink-muted">{keyStatus}</span>}
+        {keyStatus && <Note>{keyStatus}</Note>}
       </div>
     </div>
   );

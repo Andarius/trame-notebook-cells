@@ -1,6 +1,6 @@
 // Project kernel wizard: the folder's pyproject run by uv, then --python, --with packages and env vars.
-import { useEffect, useState } from "react";
-import { appConfirm, FIELD_LABEL, Modal } from "@trame/web-api";
+import { type ComponentProps, type ReactNode, useEffect, useState } from "react";
+import { appConfirm, Button, ErrorNote, Field, IconButton, Modal, TextArea, TextInput } from "@trame/web-api";
 import {
   type KernelSpec,
   listPythons,
@@ -15,11 +15,6 @@ import {
 
 const STEPS = ["Folder", "Python & packages", "Environment", "Review"];
 
-const field =
-  "w-full rounded-md border border-chipline bg-transparent px-2.5 py-1.5 text-[12.5px] text-ink outline-none placeholder:text-ink-muted/50 focus:border-copper/60";
-const pill = (on: boolean) =>
-  `rounded-md border px-2.5 py-0.5 text-[11.5px] ${on ? "border-copper bg-copper/10 text-copper" : "border-chipline text-ink-soft hover:border-ink-faint"}`;
-const chip = "inline-flex items-center gap-1 rounded-full border border-chipline bg-card py-px pl-2.5 pr-1 font-mono text-[11px] text-ink-soft";
 
 const parseEnv = (text: string) =>
   Object.fromEntries(
@@ -41,36 +36,64 @@ const tooOld = (version: string, requires: string | null) => {
   return ma < Number(min[1]) || (ma === Number(min[1]) && mi < Number(min[2]));
 };
 
-function useDebounced<T>(value: T, ms: number) {
-  const [out, setOut] = useState(value);
+/** `load(key)` once `key` has been still for `ms`; a stale answer is dropped. `settled` is false while waiting. */
+function useLookup<T>(key: string, load: (key: string) => Promise<T>, ms: number) {
+  const [state, setState] = useState<{ key: string; data: T | null; error: string | null }>({ key: "", data: null, error: null });
   useEffect(() => {
-    const t = setTimeout(() => setOut(value), ms);
-    return () => clearTimeout(t);
-  }, [value, ms]);
-  return out;
+    if (!key) return void setState({ key, data: null, error: null });
+    let live = true;
+    const t = setTimeout(() => {
+      load(key).then((data) => live && setState({ key, data, error: null }))
+        .catch((e: Error) => live && setState({ key, data: null, error: e.message }));
+    }, ms);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- `load` is a module function
+  }, [key, ms]);
+  const settled = state.key === key;
+  return { data: settled ? state.data : null, error: settled ? state.error : null, settled };
 }
 
-const Label = ({ text, hint }: { text: string; hint?: string }) => (
-  <span className="mb-1 flex items-baseline justify-between">
-    <span className={FIELD_LABEL}>{text}</span>
-    {hint && <span className="text-[10.5px] text-ink-faint">{hint}</span>}
+const Pill = ({ on, className = "", ...props }: { on: boolean } & ComponentProps<"button">) => (
+  <button
+    type="button"
+    {...props}
+    className={`rounded-md border px-2.5 py-0.5 text-[11.5px] ${
+      on ? "border-copper bg-copper/10 text-copper" : "border-chipline text-ink-soft hover:border-ink-faint"
+    } ${className}`.trim()}
+  />
+);
+
+// a package as a chip; removable with `onRemove`
+const Chip = ({ children, onRemove }: { children: string; onRemove?: () => void }) => (
+  <span
+    className={`inline-flex items-center gap-1 rounded-full border border-chipline bg-card py-px pl-2.5 font-mono text-[11px] text-ink-soft ${
+      onRemove ? "pr-1" : "pr-2.5 opacity-75"
+    }`}
+  >
+    {children}
+    {onRemove && <IconButton tone="danger" aria-label={`remove ${children}`} className="px-1" onClick={onRemove}>×</IconButton>}
   </span>
+);
+
+// a row of the PyPI lookup: the requirement on the left, what it is on the right
+const Option = ({ label, note, strong, onClick }: { label: string; note: ReactNode; strong?: boolean; onClick: () => void }) => (
+  <button
+    type="button"
+    className={`flex w-full justify-between rounded-md px-2 py-1 text-left font-mono text-[11.5px] hover:bg-hover ${strong ? "text-ink" : "text-ink-soft"}`}
+    onClick={onClick}
+  >
+    {label}
+    <span className="font-sans text-ink-faint">{note}</span>
+  </button>
 );
 
 // --with input: type a name, pick latest or a release from PyPI, or type a uv requirement
 function PackagePicker({ onAdd }: { onAdd: (req: string) => void }) {
   const [text, setText] = useState("");
-  const name = useDebounced(reqName(text.trim()), 350);
-  const [found, setFound] = useState<PyPiProject | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    setFound(null);
-    setError(null);
-    if (!name) return;
-    let live = true;
-    pypiVersions(name).then((p) => live && setFound(p)).catch((e: Error) => live && setError(e.message));
-    return () => void (live = false);
-  }, [name]);
+  const { data: found, error } = useLookup<PyPiProject>(reqName(text.trim()), pypiVersions, 350);
   const add = (req: string) => {
     onAdd(req);
     setText("");
@@ -78,8 +101,8 @@ function PackagePicker({ onAdd }: { onAdd: (req: string) => void }) {
   const typedSpec = text.trim() !== reqName(text.trim());
   return (
     <div>
-      <input
-        className={`${field} font-mono text-[12px]`}
+      <TextInput
+        mono
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
@@ -96,18 +119,10 @@ function PackagePicker({ onAdd }: { onAdd: (req: string) => void }) {
           {found && (
             <>
               <div className="px-2 pb-1 pt-1.5 text-[11px] text-ink-faint">{found.summary}</div>
-              {typedSpec && (
-                <button type="button" className="flex w-full justify-between rounded-md px-2 py-1 text-left font-mono text-[11.5px] text-ink-soft hover:bg-hover" onClick={() => add(text.trim())}>
-                  {text.trim()}<span className="font-sans text-ink-faint">as typed ⏎</span>
-                </button>
-              )}
-              <button type="button" className="flex w-full justify-between rounded-md px-2 py-1 text-left font-mono text-[11.5px] text-ink hover:bg-hover" onClick={() => add(found.name)}>
-                {found.name}<span className="font-sans text-ink-faint">latest · {found.latest}</span>
-              </button>
+              {typedSpec && <Option label={text.trim()} note="as typed ⏎" onClick={() => add(text.trim())} />}
+              <Option strong label={found.name} note={`latest · ${found.latest}`} onClick={() => add(found.name)} />
               {found.versions.map((v) => (
-                <button key={v.version} type="button" className="flex w-full justify-between rounded-md px-2 py-1 text-left font-mono text-[11.5px] text-ink-soft hover:bg-hover" onClick={() => add(`${found.name}==${v.version}`)}>
-                  =={v.version}<span className="font-sans text-ink-faint">{v.at}</span>
-                </button>
+                <Option key={v.version} label={`==${v.version}`} note={v.at} onClick={() => add(`${found.name}==${v.version}`)} />
               ))}
             </>
           )}
@@ -120,7 +135,7 @@ function PackagePicker({ onAdd }: { onAdd: (req: string) => void }) {
 function Chips({ items, more = 0 }: { items: string[]; more?: number }) {
   return (
     <div className="flex flex-wrap gap-1">
-      {items.map((d) => <span key={d} className={`${chip} pr-2.5 opacity-75`}>{d}</span>)}
+      {items.map((d) => <Chip key={d}>{d}</Chip>)}
       {more > 0 && <span className="px-1 text-[11px] text-ink-faint">+{more}</span>}
     </div>
   );
@@ -138,25 +153,15 @@ export function KernelConfig({ spec, onClose, onSaved }: {
   const [python, setPython] = useState(c?.python ?? "");
   const [packages, setPackages] = useState<string[]>(c?.packages ?? []);
   const [env, setEnv] = useState(Object.entries(c?.env ?? {}).map(([k, v]) => `${k}=${v}`).join("\n"));
-  const [project, setProject] = useState<ProjectInfo | null>(null);
-  const [projectError, setProjectError] = useState<string | null>(null);
   const [pythons, setPythons] = useState<PythonVersion[]>([]);
   const [showDeps, setShowDeps] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const folderPath = useDebounced(path.trim(), 300);
-  useEffect(() => {
-    setProject(null);
-    setProjectError(null);
-    if (!folderPath) return;
-    let live = true;
-    readProject(folderPath).then((p) => live && setProject(p)).catch((e: Error) => live && setProjectError(e.message));
-    return () => void (live = false);
-  }, [folderPath]);
+  const { data: project, error: projectError, settled } = useLookup<ProjectInfo>(path.trim(), readProject, 300);
   useEffect(() => void listPythons().then(setPythons).catch(() => {}), []);
 
-  const ready = !!project && project.dir.length > 0 && folderPath === path.trim();
+  const ready = !!project && project.dir.length > 0 && settled;
   const folder = path.trim().replace(/\/+$/, "").split("/").pop() || "project";
   const envVars = parseEnv(env);
   const command = [
@@ -220,10 +225,9 @@ export function KernelConfig({ spec, onClose, onSaved }: {
 
       {step === 0 && (
         <div className="flex flex-col gap-3">
-          <label className="flex flex-col">
-            <Label text="PROJECT FOLDER" hint="--directory · absolute path" />
-            <input autoFocus className={`${field} font-mono text-[12px]`} value={path} onChange={(e) => setPath(e.target.value)} placeholder="/home/you/projects/analysis" />
-          </label>
+          <Field label="PROJECT FOLDER" hint="--directory · absolute path">
+            <TextInput autoFocus mono value={path} onChange={(e) => setPath(e.target.value)} placeholder="/home/you/projects/analysis" />
+          </Field>
           {projectError && path.trim() && <div className="text-[11.5px] text-blocked">{projectError}</div>}
           {project && (
             <div className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-1 rounded-lg border border-line bg-card px-3 py-2.5 text-[12px]">
@@ -237,74 +241,64 @@ export function KernelConfig({ spec, onClose, onSaved }: {
               <span className={project.lock ? "text-active" : "text-paused"}>{project.lock ? "✓ uv.lock" : "none, uv resolves on first start"}</span>
             </div>
           )}
-          <label className="flex flex-col">
-            <Label text="NAME" hint="in the kernel menu" />
-            <input className={field} value={display} onChange={(e) => setDisplay(e.target.value)} placeholder={`${project?.name ?? folder} (uv)`} />
-          </label>
+          <Field label="NAME" hint="in the kernel menu">
+            <TextInput value={display} onChange={(e) => setDisplay(e.target.value)} placeholder={`${project?.name ?? folder} (uv)`} />
+          </Field>
         </div>
       )}
 
       {step === 1 && (
         <div className="flex flex-col gap-3.5">
-          <div>
-            <Label text="--PYTHON" hint={project?.requiresPython ? `project requires ${project.requiresPython}` : undefined} />
+          <Field group label="--PYTHON" hint={project?.requiresPython && `project requires ${project.requiresPython}`}>
             <div className="flex flex-wrap gap-1.5">
-              <button type="button" className={pill(!python)} onClick={() => setPython("")}>project's</button>
+              <Pill on={!python} onClick={() => setPython("")}>project's</Pill>
               {pyChoices.map((p) => {
                 const old = tooOld(p.version, project?.requiresPython ?? null);
                 return (
-                  <button
+                  <Pill
                     key={p.version}
-                    type="button"
+                    on={python === p.version}
                     title={old ? `below ${project?.requiresPython}` : p.installed ? "installed" : "uv downloads it on first start"}
-                    className={`${pill(python === p.version)} inline-flex items-center gap-1.5 ${old ? "opacity-40" : ""}`}
+                    className={`inline-flex items-center gap-1.5 ${old ? "opacity-40" : ""}`}
                     onClick={() => setPython(p.version)}
                   >
                     {p.version}
                     {p.installed && <span className="size-1.5 rounded-full bg-active" />}
-                  </button>
+                  </Pill>
                 );
               })}
             </div>
-          </div>
-          <div>
-            <Label text="DEPENDENCIES" hint="from pyproject.toml, uv installs them" />
+          </Field>
+          <Field group label="DEPENDENCIES" hint="from pyproject.toml, uv installs them">
             {deps.length ? <Chips items={shownDeps} more={showDeps ? 0 : deps.length - shownDeps.length} /> : <span className="text-[11.5px] text-ink-faint">none</span>}
             {deps.length > 8 && (
-              <button type="button" className="mt-1 text-[11px] text-ink-faint hover:text-ink-soft" onClick={() => setShowDeps(!showDeps)}>
+              <Button variant="link" className="self-start" onClick={() => setShowDeps(!showDeps)}>
                 {showDeps ? "show less" : "show all"}
-              </button>
+              </Button>
             )}
             {!!project?.dev.length && (
-              <div className="mt-1.5 flex items-center gap-2">
+              <div className="mt-0.5 flex items-center gap-2">
                 <span className="text-[10.5px] text-ink-faint">dev</span>
                 <Chips items={project.dev.slice(0, 6)} more={project.dev.length - 6} />
               </div>
             )}
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label text="--WITH" hint="kernel only, pyproject.toml is not changed" />
+          </Field>
+          <Field group label="--WITH" hint="kernel only, pyproject.toml is not changed">
             {packages.length > 0 && (
               <div className="flex flex-wrap gap-1">
-                {packages.map((p) => (
-                  <span key={p} className={chip}>
-                    {p}
-                    <button type="button" aria-label={`remove ${p}`} className="px-1 text-ink-faint hover:text-blocked" onClick={() => setPackages(packages.filter((x) => x !== p))}>×</button>
-                  </span>
-                ))}
+                {packages.map((p) => <Chip key={p} onRemove={() => setPackages(packages.filter((x) => x !== p))}>{p}</Chip>)}
               </div>
             )}
             <PackagePicker onAdd={addPackage} />
-          </div>
+          </Field>
         </div>
       )}
 
       {step === 2 && (
-        <label className="flex flex-col">
-          <Label text="ENVIRONMENT" hint="KEY=value per line, like a .env file" />
-          <textarea autoFocus rows={6} className={`${field} resize-y font-mono text-[12px]`} value={env} onChange={(e) => setEnv(e.target.value)} placeholder={"PGHOST=localhost\nNB_DARK=1"} />
-          <span className="mt-1 text-[10.5px] text-ink-faint">Stored in plain text in the kernel spec: keep secrets out.</span>
-        </label>
+        <Field label="ENVIRONMENT" hint="KEY=value per line, like a .env file">
+          <TextArea autoFocus mono rows={6} value={env} onChange={(e) => setEnv(e.target.value)} placeholder={"PGHOST=localhost\nNB_DARK=1"} />
+          <span className="text-[10.5px] text-ink-faint">Stored in plain text in the kernel spec: keep secrets out.</span>
+        </Field>
       )}
 
       {step === 3 && (
@@ -320,36 +314,35 @@ export function KernelConfig({ spec, onClose, onSaved }: {
               <div key={k as string} className="grid grid-cols-[100px_1fr_auto] items-baseline gap-3 border-t border-line px-3 py-2 first:border-t-0">
                 <span className="text-[11.5px] text-ink-faint">{k}</span>
                 <span className="break-all text-ink-soft">{v}</span>
-                <button type="button" className="text-[11px] text-ink-faint hover:text-copper" onClick={() => setStep(i as number)}>edit</button>
+                <Button variant="link" onClick={() => setStep(i as number)}>edit</Button>
               </div>
             ))}
           </div>
-          <div className="flex flex-col">
-            <Label text="RUNS" hint="in the project folder" />
+          <Field group label="RUNS" hint="in the project folder">
             <code className="block break-all rounded-md bg-card px-2.5 py-2 font-mono text-[11px] leading-relaxed text-ink-muted">{command}</code>
-            {spec && <span className="mt-1 text-[10.5px] text-ink-faint">Running kernels keep their old settings until restarted.</span>}
-          </div>
+            {spec && <span className="text-[10.5px] text-ink-faint">Running kernels keep their old settings until restarted.</span>}
+          </Field>
           {!ready && <div className="text-[11.5px] text-paused">{projectError ?? "Checking the project folder…"}</div>}
         </div>
       )}
 
-      {error && <div className="rounded-md bg-blocked/10 px-2.5 py-1.5 text-[11.5px] text-blocked">{error}</div>}
+      {error && <ErrorNote>{error}</ErrorNote>}
       <div className="mt-1 flex items-center gap-2">
-        {step > 0 && <button type="button" className="rounded-md px-2.5 py-1 text-[12px] text-ink-soft hover:bg-hover" onClick={() => setStep(step - 1)}>Back</button>}
-        {spec && step === 3 && <button type="button" className="rounded-md px-2.5 py-1 text-[12px] text-ink-muted hover:bg-blocked/10 hover:text-blocked" onClick={() => void remove()}>Remove</button>}
+        {step > 0 && <Button variant="ghost" onClick={() => setStep(step - 1)}>Back</Button>}
+        {spec && step === 3 && <Button variant="danger" onClick={() => void remove()}>Remove</Button>}
         <span className="flex-1" />
         {step < 3 && (
           <>
-            <button type="button" disabled={!ready} className="rounded-md px-3 py-1 text-[12px] text-ink-soft hover:bg-hover disabled:opacity-40" onClick={() => setStep(3)}>Skip to review</button>
-            <button type="button" disabled={!ready} className="rounded-md bg-copper px-3 py-1 text-[12px] font-semibold text-copper-ink hover:brightness-110 disabled:opacity-40" onClick={() => setStep(step + 1)}>Next</button>
+            <Button variant="ghost" disabled={!ready} onClick={() => setStep(3)}>Skip to review</Button>
+            <Button variant="primary" disabled={!ready} onClick={() => setStep(step + 1)}>Next</Button>
           </>
         )}
         {step === 3 && (
           <>
-            {spec && <button type="button" disabled={!ready || !!busy} className="rounded-md border border-chipline px-3 py-1 text-[12px] text-ink-soft hover:border-copper hover:text-copper disabled:opacity-40" onClick={() => save(false)}>{busy === "saving" ? "Saving…" : "Save"}</button>}
-            <button type="button" disabled={!ready || !!busy} className="rounded-md bg-copper px-3 py-1 text-[12px] font-semibold text-copper-ink hover:brightness-110 disabled:opacity-40" onClick={() => save(true)}>
+            {spec && <Button disabled={!ready || !!busy} onClick={() => save(false)}>{busy === "saving" ? "Saving…" : "Save"}</Button>}
+            <Button variant="primary" disabled={!ready || !!busy} onClick={() => save(true)}>
               {busy === "starting" ? "Starting…" : spec ? "Save & start" : "Create & start"}
-            </button>
+            </Button>
           </>
         )}
       </div>

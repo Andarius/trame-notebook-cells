@@ -1,36 +1,24 @@
 // Jupyter-style command mode shared by a page's cells: which cell is selected, and moving focus.
-import { useSyncExternalStore } from "react";
+import { store } from "./store";
 
-let selected: string | null = null;
-const listeners = new Set<() => void>();
+const selected = store<string | null>(null);
 
 export function selectCell(id: string | null) {
-  selected = id;
-  for (const l of listeners) l();
+  selected.set(id);
   if (id) requestAnimationFrame(() => cellEl(id)?.focus({ preventScroll: false }));
 }
 
 /** Mark the cell current without moving focus (its editor just took it). */
-export function markCell(id: string) {
-  if (selected === id) return;
-  selected = id;
-  for (const l of listeners) l();
-}
+export const markCell = (id: string) => selected.set(id);
 
-export function useSelectedCell(): string | null {
-  return useSyncExternalStore((l) => {
-    listeners.add(l);
-    return () => listeners.delete(l);
-  }, () => selected);
-}
+export const useSelectedCell = selected.use;
 
 const pageOrder = () => [...document.querySelectorAll<HTMLElement>("[data-cell-id]")].map((el) => el.dataset.cellId ?? "");
 const cellEl = (id: string) => document.querySelector<HTMLElement>(`[data-cell-id="${CSS.escape(id)}"]`);
 
 /** Edit mode: focus the cell's editor. */
 export function editCell(id: string) {
-  selected = id;
-  for (const l of listeners) l();
+  selected.set(id);
   requestAnimationFrame(() => cellEl(id)?.querySelector<HTMLElement>(".cm-content")?.focus());
 }
 

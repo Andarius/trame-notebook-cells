@@ -1,6 +1,6 @@
 // Client of /api/plugins/notebook-cells: kernels, streamed execution, settings, export.
-import { useSyncExternalStore } from "react";
 import type { CellEvent } from "./cell-output";
+import { store } from "./store";
 
 const BASE = "/api/plugins/notebook-cells";
 
@@ -35,17 +35,20 @@ async function json<T>(res: Response): Promise<T> {
   if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
   return body;
 }
+// the plugin's routes by sub path; Trame's own by their /api/ path
+const url = (path: string) => (path.startsWith("/api/") ? path : `${BASE}${path}`);
+const get = <T,>(path: string, params?: Record<string, string>) =>
+  fetch(params ? `${url(path)}?${new URLSearchParams(params)}` : url(path)).then((r) => json<T>(r));
+const post = (path: string, body: unknown, signal?: AbortSignal) =>
+  fetch(url(path), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal });
 
-export const getSettings = () => fetch(`${BASE}/settings`).then((r) => json<Settings>(r));
+export const getSettings = () => get<Settings>("/settings");
 export const saveSettings = (patch: { serverUrl?: string; token?: string; enabled?: boolean; keymap?: ImportedKeymap | null }) =>
-  fetch(`${BASE}/settings`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(patch) })
-    .then((r) => json<Settings>(r));
-export const listKernels = () => fetch(`${BASE}/kernels`).then((r) => json<{ kernels: Kernel[] }>(r)).then((r) => r.kernels);
-const postJson = <T,>(path: string, body: unknown) =>
-  fetch(`${BASE}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
-    .then((r) => json<T>(r));
+  post("/settings", patch).then((r) => json<Settings>(r));
+export const listKernels = () => get<{ kernels: Kernel[] }>("/kernels").then((r) => r.kernels);
+const postJson = <T,>(path: string, body: unknown) => post(path, body).then((r) => json<T>(r));
 export const startKernel = (name?: string) => postJson<{ id: string }>("/kernels", name ? { name } : {});
-export const listKernelSpecs = () => fetch(`${BASE}/kernelspecs`).then((r) => json<{ default: string; specs: KernelSpec[] }>(r));
+export const listKernelSpecs = () => get<{ default: string; specs: KernelSpec[] }>("/kernelspecs");
 // registers the folder's pyproject env as a uv kernel spec, then starts it
 export const saveProjectKernel = (cfg: ProjectKernelConfig, start: boolean) =>
   postJson<{ id?: string; spec: string }>("/project-kernel", { ...cfg, start });
@@ -60,29 +63,21 @@ export type ProjectInfo = {
 };
 export type PythonVersion = { version: string; installed: boolean };
 export type PyPiProject = { name: string; summary: string | null; latest: string; versions: { version: string; at: string | null }[] };
-const getJson = <T,>(path: string, params: Record<string, string> = {}) =>
-  fetch(`${BASE}${path}?${new URLSearchParams(params)}`).then((r) => json<T>(r));
-export const readProject = (path: string) => getJson<ProjectInfo>("/project", { path });
-export const listPythons = () => getJson<PythonVersion[]>("/pythons");
-export const pypiVersions = (name: string) => getJson<PyPiProject>("/pypi", { name });
+export const readProject = (path: string) => get<ProjectInfo>("/project", { path });
+export const listPythons = () => get<PythonVersion[]>("/pythons");
+export const pypiVersions = (name: string) => get<PyPiProject>("/pypi", { name });
 export const removeProjectKernel = (name: string) => postJson<{ ok: boolean }>("/project-kernel/remove", { name });
 export const shutdownKernel = (kernel: string) => postJson<{ ok: boolean }>("/shutdown", { kernel });
 export const interrupt = (kernel: string) => postJson<{ ok: boolean }>("/interrupt", { kernel });
 export const restart = (kernel: string) => postJson<{ ok: boolean }>("/restart", { kernel });
 export const readNotebook = (path: string) =>
-  fetch(`${BASE}/notebook?path=${encodeURIComponent(path)}`).then((r) =>
-    json<{ path: string; cells: { cell_type: string; source: string; outputs?: unknown[]; count?: number | null }[] }>(r)
-  );
+  get<{ path: string; cells: { cell_type: string; source: string; outputs?: unknown[]; count?: number | null }[] }>("/notebook", { path });
 
 // Runs `code` and hands every event to `onEvent` as it streams; resolves when the kernel is idle again.
 export async function execute(code: string, kernel: string | null, onEvent: (ev: CellEvent) => void, signal?: AbortSignal) {
-  const res = await fetch(`${BASE}/execute`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code, kernel }),
-    signal,
-  });
-  if (!res.ok || !res.body) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
+  const res = await post("/execute", { code, kernel }, signal);
+  if (!res.ok) await json(res);
+  if (!res.body) throw new Error("no output stream");
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -102,40 +97,15 @@ export async function execute(code: string, kernel: string | null, onEvent: (ev:
 }
 
 // The kernel the page's cells run on, shared by every cell in the window.
-let preferred: string | null = null;
-const listeners = new Set<() => void>();
-export function setPreferredKernel(id: string | null) {
-  preferred = id;
-  for (const l of listeners) l();
-}
-export function usePreferredKernel(): string | null {
-  return useSyncExternalStore((l) => {
-    listeners.add(l);
-    return () => listeners.delete(l);
-  }, () => preferred);
-}
+const preferred = store<string | null>(null);
+export const setPreferredKernel = preferred.set;
+export const usePreferredKernel = preferred.use;
 
-export const createReport = (title: string, html: string) =>
-  fetch("/api/reports", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, html }) })
-    .then((r) => json<{ id: string }>(r));
+export const createReport = (title: string, html: string) => postJson<{ id: string }>("/api/reports", { title, html });
 
-export const readPyCharmKeymap = () => fetch(`${BASE}/pycharm-keymap`).then((r) => json<PyCharmKeymap>(r));
+export const readPyCharmKeymap = () => get<PyCharmKeymap>("/pycharm-keymap");
 
 // The editor keymap imported from PyCharm, shared by every cell; loaded once from the settings.
-let keymapState: ImportedKeymap | null = null;
-let keymapLoaded = false;
-const keymapListeners = new Set<() => void>();
-export function setCellKeymap(km: ImportedKeymap | null) {
-  keymapState = km;
-  keymapLoaded = true;
-  for (const l of keymapListeners) l();
-}
-function subscribeKeymap(l: () => void) {
-  keymapListeners.add(l);
-  if (!keymapLoaded) {
-    keymapLoaded = true;
-    getSettings().then((s) => setCellKeymap(s.keymap ?? null)).catch(() => {});
-  }
-  return () => keymapListeners.delete(l);
-}
-export const useCellKeymap = (): ImportedKeymap | null => useSyncExternalStore(subscribeKeymap, () => keymapState);
+const keymap = store<ImportedKeymap | null>(null, () => void getSettings().then((s) => keymap.set(s.keymap ?? null)).catch(() => {}));
+export const setCellKeymap = keymap.set;
+export const useCellKeymap = keymap.use;

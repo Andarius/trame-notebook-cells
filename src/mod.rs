@@ -383,7 +383,10 @@ fn install_project_spec(body: &Value) -> Result<String> {
     let (name, spec) = project_spec(&cfg, &uv);
     let target = kernels_dir().join(&name);
     std::fs::create_dir_all(&target)?;
-    std::fs::write(target.join("kernel.json"), serde_json::to_string_pretty(&spec)?)?;
+    std::fs::write(
+        target.join("kernel.json"),
+        serde_json::to_string_pretty(&spec)?,
+    )?;
     Ok(name)
 }
 
@@ -514,7 +517,7 @@ async fn run_cell(
 }
 
 fn failed(e: &anyhow::Error) -> Response {
-    json_response(502, json!({"error": e.to_string()}))
+    json_response(502, json!({"error": format!("{e:#}")}))
 }
 
 // Cells of a notebook on the server, for importing them into a page.

@@ -1,6 +1,6 @@
 // A python cell: source on top, outputs below, run on the page's Jupyter kernel.
 import { useEffect, useRef, useState } from "react";
-import { type BlockViewProps, IconButton, type PluginBlock } from "@trame/web-api";
+import { type BlockViewProps, Button, ErrorNote, IconButton, type PluginBlock } from "@trame/web-api";
 import { execute, interrupt, setPreferredKernel, usePreferredKernel } from "./api";
 import { editCell, markCell, neighbourCell, registerCell, selectCell, useSelectedCell } from "./cell-mode";
 import { applyEvent, CellOutputs, type RunState, storable } from "./cell-output";
@@ -108,7 +108,6 @@ function CodeBlock({ block: raw, enabled, onPatch, onRemove, onInsert, onOpenSet
 
   const outputs = run?.outputs ?? block.outputs ?? [];
   const count = running ? "*" : block.count ?? " ";
-  const btn = "shrink-0 rounded-md border border-chipline bg-panel px-2 py-[2px] text-[11px] font-medium text-ink-soft hover:border-copper hover:text-copper disabled:opacity-40";
 
   return (
     <div
@@ -130,23 +129,23 @@ function CodeBlock({ block: raw, enabled, onPatch, onRemove, onInsert, onOpenSet
         <span className="w-10 shrink-0 font-mono text-[10.5px] text-ink-faint">[{count}]</span>
         {enabled
           ? (
-            <button type="button" onClick={running ? stop : execCell} title={running ? "interrupt the kernel (i i)" : "run (ctrl+enter)"} className={btn}>
+            <Button variant="chip" size="sm" className="shrink-0" onClick={running ? stop : execCell} title={running ? "interrupt the kernel (i i)" : "run (ctrl+enter)"}>
               {running ? "■ stop" : "▶ run"}
-            </button>
+            </Button>
           )
           : (
-            <button type="button" onClick={onOpenSettings} title="the Notebook cells plugin runs cells on a Jupyter kernel" className={btn}>
+            <Button variant="chip" size="sm" className="shrink-0" onClick={onOpenSettings} title="the Notebook cells plugin runs cells on a Jupyter kernel">
               turn on to run
-            </button>
+            </Button>
           )}
         <span className="flex-1" />
         <span className="hidden text-[10px] text-ink-faint group-hover/cell:inline">
           esc · a/b insert · dd delete · ⇧⏎ run next
         </span>
-        <button type="button" title="clear outputs" className={btn} disabled={!block.outputs?.length || running} onClick={() => onPatch({ outputs: [], count: null })}>
+        <Button variant="chip" size="sm" className="shrink-0" title="clear outputs" disabled={!block.outputs?.length || running} onClick={() => onPatch({ outputs: [], count: null })}>
           clear
-        </button>
-        <IconButton onClick={onRemove} title="remove the cell (d d)" className="shrink-0 rounded px-1 text-ink-muted/60 hover:bg-panel hover:text-blocked">
+        </Button>
+        <IconButton tone="danger" onClick={onRemove} title="remove the cell (d d)" className="shrink-0 rounded px-1 hover:bg-panel">
           ×
         </IconButton>
       </div>
@@ -158,7 +157,7 @@ function CodeBlock({ block: raw, enabled, onPatch, onRemove, onInsert, onOpenSet
         onRunNext={runAndAdvance}
         onEscape={() => selectCell(id)}
       />
-      {err && <div className="border-t border-line-soft px-3 py-1.5 text-[11.5px] text-blocked">⚠ {err}</div>}
+      {err && <ErrorNote className="mx-2 my-1.5">{err}</ErrorNote>}
       <CellOutputs outputs={outputs} />
     </div>
   );
