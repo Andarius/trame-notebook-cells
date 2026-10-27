@@ -18,7 +18,7 @@ mod uv;
 
 pub const ID: &str = "notebook-cells";
 // keep in step with version.ts (version_test.ts checks it)
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.1.1";
 const REPO: &str = "Andarius/trame-notebook-cells";
 
 fn settings_view(slice: &Value) -> Value {
