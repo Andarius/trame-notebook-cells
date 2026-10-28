@@ -13,7 +13,7 @@ export const markCell = (id: string) => selected.set(id);
 
 export const useSelectedCell = selected.use;
 
-const pageOrder = () => [...document.querySelectorAll<HTMLElement>("[data-cell-id]")].map((el) => el.dataset.cellId ?? "");
+export const pageOrder = () => [...document.querySelectorAll<HTMLElement>("[data-cell-id]")].map((el) => el.dataset.cellId ?? "");
 const cellEl = (id: string) => document.querySelector<HTMLElement>(`[data-cell-id="${CSS.escape(id)}"]`);
 
 /** Edit mode: focus the cell's editor. */

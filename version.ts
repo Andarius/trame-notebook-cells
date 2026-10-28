@@ -1,7 +1,9 @@
 // Plugin release identity: Trame compares VERSION with the latest GitHub release of REPO.
 // src/mod.rs carries the same two constants; version_test.ts keeps them equal.
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 export const REPO = "Andarius/trame-notebook-cells";
+// the Trame releases this one builds against
+export const TRAME = ">=0.25.0 <0.27.0";
 
 /** Why a pushed tag cannot release this version, or null when it matches (`v` prefix optional). */
 export function tagMismatch(tag: string, version = VERSION): string | null {

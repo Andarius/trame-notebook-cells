@@ -13,12 +13,14 @@ use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
 
+mod introspect;
 mod pycharm;
+mod ruff;
 mod uv;
 
 pub const ID: &str = "notebook-cells";
 // keep in step with version.ts (version_test.ts checks it)
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const REPO: &str = "Andarius/trame-notebook-cells";
 
 fn settings_view(slice: &Value) -> Value {
@@ -123,8 +125,16 @@ impl Server {
         Ok(res.json().await?)
     }
     async fn post(&self, path: &str, body: Option<Value>) -> Result<Value> {
+        self.send(reqwest::Method::POST, path, body).await
+    }
+    async fn send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value> {
         let mut req = Self::client()?
-            .post(format!("{}{path}", self.url))
+            .request(method, format!("{}{path}", self.url))
             .header("authorization", self.auth());
         if let Some(body) = body {
             req = req.json(&body);
@@ -191,6 +201,38 @@ async fn kernels(server: &Server) -> Result<Value> {
         })
         .collect();
     Ok(json!({"kernels": list}))
+}
+
+// Jupyter's restart relaunches the kernel's first argv, so an edited spec never applies: start a new
+// kernel from the spec instead, through its notebook session when one holds it (as JupyterLab's
+// "Change kernel" does, so that notebook follows). Returns the id to run on.
+async fn restart(server: &Server, id: &str) -> Result<Value> {
+    let path = format!("/api/kernels/{id}");
+    let (kernel, sessions) = tokio::try_join!(server.get(&path), server.get("/api/sessions"))?;
+    let Some(name) = kernel["name"].as_str() else {
+        bail!("kernel {id} has no spec name");
+    };
+    let session = sessions
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["kernel"]["id"] == id)
+        .and_then(|s| s["id"].as_str());
+    if let Some(sid) = session {
+        let s = server
+            .send(
+                reqwest::Method::PATCH,
+                &format!("/api/sessions/{sid}"),
+                Some(json!({"kernel": {"name": name}})),
+            )
+            .await?;
+        return Ok(json!({"id": s["kernel"]["id"]}));
+    }
+    let fresh = server
+        .post("/api/kernels", Some(json!({"name": name})))
+        .await?;
+    server.delete(&path).await?;
+    Ok(json!({"id": fresh["id"]}))
 }
 
 // Installed kernel specs, default first; `project` marks the ones made from a project folder.
@@ -434,35 +476,100 @@ fn event(tx: &mpsc::Sender<Result<Bytes, std::io::Error>>, value: &Value) -> boo
     tx.try_send(Ok(Bytes::from(line))).is_ok()
 }
 
+type Channel =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// A kernel's channels: shell requests go out on it, their replies and iopub messages come back.
+struct Shell {
+    ws: Channel,
+    session: String,
+}
+
+impl Shell {
+    async fn open(server: &Server, kernel: &str) -> Result<Self> {
+        let session = uuid::Uuid::new_v4().to_string();
+        let mut req = server
+            .ws(&format!(
+                "/api/kernels/{kernel}/channels?session_id={session}"
+            ))
+            .into_client_request()?;
+        req.headers_mut()
+            .insert("authorization", server.auth().parse()?);
+        let (ws, _) = tokio_tungstenite::connect_async(req)
+            .await
+            .context("kernel channel refused")?;
+        Ok(Self { ws, session })
+    }
+
+    /// Sends one shell request; returns its `msg_id`.
+    async fn send(&mut self, msg_type: &str, content: Value) -> Result<String> {
+        let msg_id = uuid::Uuid::new_v4().to_string();
+        let request = json!({
+            "header": {"msg_id": msg_id, "username": "trame", "session": self.session, "msg_type": msg_type, "version": "5.3", "date": chrono::Utc::now().to_rfc3339()},
+            "parent_header": {},
+            "metadata": {},
+            "content": content,
+            "channel": "shell",
+            "buffers": [],
+        });
+        self.ws
+            .send(Message::Text(request.to_string().into()))
+            .await?;
+        Ok(msg_id)
+    }
+}
+
+/// One shell request (`complete_request`, …) answered by its `_reply` content; a busy kernel times out.
+async fn ask(server: &Server, kernel: &str, msg_type: &str, content: Value) -> Result<Value> {
+    let reply_type = msg_type.replace("_request", "_reply");
+    let exchange = async {
+        let mut shell = Shell::open(server, kernel).await?;
+        let msg_id = shell.send(msg_type, content).await?;
+        let ws = &mut shell.ws;
+        while let Some(frame) = ws.next().await {
+            let Message::Text(text) = frame? else {
+                continue;
+            };
+            let Ok(m) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            if m["parent_header"]["msg_id"] == msg_id && m["header"]["msg_type"] == reply_type {
+                let _ = ws.close(None).await;
+                return Ok(m["content"].clone());
+            }
+        }
+        bail!("kernel closed the channel")
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), exchange)
+        .await
+        .map_err(|_| anyhow!("kernel busy"))?
+}
+
+fn kernel_time(m: &Value) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    chrono::DateTime::parse_from_rfc3339(m["header"]["date"].as_str()?).ok()
+}
+
 // One execute_request over the kernel's websocket; iopub messages of that request become events.
 async fn run_cell(
     server: Server,
     kernel: String,
     code: String,
+    theme: &'static str,
     tx: mpsc::Sender<Result<Bytes, std::io::Error>>,
 ) -> Result<()> {
-    let session = uuid::Uuid::new_v4().to_string();
-    let mut req = server
-        .ws(&format!(
-            "/api/kernels/{kernel}/channels?session_id={session}"
-        ))
-        .into_client_request()?;
-    req.headers_mut()
-        .insert("authorization", server.auth().parse()?);
-    let (mut ws, _) = tokio_tungstenite::connect_async(req)
-        .await
-        .context("kernel channel refused")?;
-    let msg_id = uuid::Uuid::new_v4().to_string();
-    let request = json!({
-        "header": {"msg_id": msg_id, "username": "trame", "session": session, "msg_type": "execute_request", "version": "5.3", "date": chrono::Utc::now().to_rfc3339()},
-        "parent_header": {},
-        "metadata": {},
-        "content": {"code": code, "silent": false, "store_history": true, "user_expressions": {}, "allow_stdin": false, "stop_on_error": true},
-        "channel": "shell",
-        "buffers": [],
-    });
-    ws.send(Message::Text(request.to_string().into())).await?;
+    let mut shell = Shell::open(&server, &kernel).await?;
+    // queued ahead of the cell on the same shell; its own replies are filtered out below
+    shell
+        .send(
+            "execute_request",
+            json!({"code": introspect::plot_setup(theme), "silent": true, "store_history": false, "user_expressions": {}, "allow_stdin": false, "stop_on_error": false}),
+        )
+        .await?;
+    let content = json!({"code": code, "silent": false, "store_history": true, "user_expressions": {}, "allow_stdin": false, "stop_on_error": true});
+    let msg_id = shell.send("execute_request", content).await?;
+    let ws = &mut shell.ws;
     let (mut replied, mut idle) = (false, false);
+    let mut began = None; // the kernel's own clock: browser timing merges fast cells into one chunk
     while let Some(frame) = ws.next().await {
         let text = match frame? {
             Message::Text(t) => t,
@@ -481,11 +588,17 @@ async fn run_cell(
                 idle = content["execution_state"] == "idle";
                 None
             }
-            "execute_input" => Some(json!({"type": "input", "count": content["execution_count"]})),
+            "execute_input" => {
+                began = kernel_time(&m);
+                Some(json!({"type": "input", "count": content["execution_count"]}))
+            }
             "execute_reply" => {
                 replied = true;
+                let ms = began
+                    .zip(kernel_time(&m))
+                    .map(|(a, b)| (b - a).num_milliseconds());
                 Some(
-                    json!({"type": "reply", "status": content["status"], "count": content["execution_count"]}),
+                    json!({"type": "reply", "status": content["status"], "count": content["execution_count"], "ms": ms}),
                 )
             }
             "stream" => {
@@ -514,6 +627,35 @@ async fn run_cell(
     }
     let _ = ws.close(None).await;
     Ok(())
+}
+
+/// The body's kernel id: it lands in a Jupyter URL path, and kernel ids are uuids.
+fn kernel_id(body: &Value) -> Option<&str> {
+    body["kernel"]
+        .as_str()
+        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+}
+
+/// The page's cell sources, bounded: they go to ruff as one notebook.
+fn cell_sources(body: &Value) -> Result<Vec<String>> {
+    let cells: Vec<String> = body["cells"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| c.as_str().unwrap_or("").to_owned())
+        .collect();
+    if cells.len() > 500 || cells.iter().map(String::len).sum::<usize>() > 2 << 20 {
+        bail!("too many or too large cells");
+    }
+    Ok(cells)
+}
+
+async fn ruff_route(job: impl FnOnce() -> Result<Value> + Send + 'static) -> Response {
+    match blocking(job).await {
+        Ok(Ok(v)) => json_response(200, v),
+        Ok(Err(e)) => json_response(400, json!({"error": format!("{e:#}")})),
+        Err(_) => json_response(500, json!({"error": "ruff failed"})),
+    }
 }
 
 fn failed(e: &anyhow::Error) -> Response {
@@ -558,6 +700,33 @@ async fn handle(
             Ok(Err(e)) => json_response(404, json!({"error": e.to_string()})),
             Err(_) => json_response(500, json!({"error": "keymap import failed"})),
         };
+    }
+    // ruff needs no kernel: it works before a Jupyter server is set up
+    match (sub, method) {
+        ("/lint", "POST") => {
+            return match cell_sources(body) {
+                Ok(cells) => ruff_route(move || ruff::lint(&cells)).await,
+                Err(e) => json_response(400, json!({"error": e.to_string()})),
+            };
+        }
+        ("/format", "POST") => {
+            let code = body["code"].as_str().unwrap_or("").to_owned();
+            return ruff_route(move || ruff::format(&code).map(|code| json!({"code": code}))).await;
+        }
+        ("/optimize-imports", "POST") => {
+            let index = body["index"].as_u64().unwrap_or(u64::MAX);
+            return match cell_sources(body) {
+                Ok(cells) => {
+                    ruff_route(move || {
+                        let index = usize::try_from(index)?;
+                        ruff::optimize_imports(&cells, index).map(|code| json!({"code": code}))
+                    })
+                    .await
+                }
+                Err(e) => json_response(400, json!({"error": e.to_string()})),
+            };
+        }
+        _ => {}
     }
     let server = match Server::from(&slice) {
         Ok(s) => s,
@@ -650,11 +819,16 @@ async fn handle(
                 Err(_) => json_response(500, json!({"error": "remove failed"})),
             }
         }
-        ("/interrupt" | "/restart" | "/shutdown", "POST") => {
-            // the id lands in the Jupyter URL path: kernel ids are uuids
-            let Some(id) = body["kernel"].as_str().filter(|s| {
-                !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-            }) else {
+        ("/restart", "POST") => {
+            let Some(id) = kernel_id(body) else {
+                return json_response(400, json!({"error": "kernel required"}));
+            };
+            restart(&server, id)
+                .await
+                .map_or_else(|e| failed(&e), |v| json_response(200, v))
+        }
+        ("/interrupt" | "/shutdown", "POST") => {
+            let Some(id) = kernel_id(body) else {
                 return json_response(400, json!({"error": "kernel required"}));
             };
             let done = if sub == "/shutdown" {
@@ -670,6 +844,24 @@ async fn handle(
                 Err(e) => failed(&e),
             }
         }
+        // what the kernel knows: never starts one, a cell run does that
+        ("/complete" | "/inspect" | "/variables" | "/modules", "POST") => {
+            let Some(kernel) = kernel_id(body) else {
+                return json_response(400, json!({"error": "kernel required"}));
+            };
+            let code = body["code"].as_str().unwrap_or("");
+            let cursor = body["cursor"].as_u64().unwrap_or(0);
+            let done = match sub {
+                "/complete" => introspect::complete(&server, kernel, code, cursor).await,
+                "/inspect" => introspect::inspect(&server, kernel, code, cursor).await,
+                "/variables" => introspect::variables(&server, kernel).await,
+                _ => match introspect::module_names(&body["names"]) {
+                    Ok(names) => introspect::missing_modules(&server, kernel, &names).await,
+                    Err(e) => return json_response(400, json!({"error": e.to_string()})),
+                },
+            };
+            done.map_or_else(|e| failed(&e), |v| json_response(200, v))
+        }
         ("/notebook", "GET") => {
             let path = param("path");
             if path.is_empty() {
@@ -681,6 +873,11 @@ async fn handle(
         }
         ("/execute", "POST") => {
             let code = body["code"].as_str().unwrap_or("").to_owned();
+            let theme = if body["theme"] == "light" {
+                "light"
+            } else {
+                "dark"
+            };
             let kernel = match ensure_kernel(&server, body["kernel"].as_str()).await {
                 Ok(k) => k,
                 Err(e) => return failed(&e),
@@ -689,7 +886,7 @@ async fn handle(
             let started = json!({"type": "start", "kernel": kernel});
             event(&tx, &started);
             tokio::spawn(async move {
-                if let Err(e) = run_cell(server, kernel, code, tx.clone()).await {
+                if let Err(e) = run_cell(server, kernel, code, theme, tx.clone()).await {
                     event(&tx, &json!({"type": "failed", "error": e.to_string()}));
                 }
             });

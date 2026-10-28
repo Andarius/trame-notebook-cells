@@ -1,13 +1,52 @@
 // A python cell: source on top, outputs below, run on the page's Jupyter kernel.
 import { useEffect, useRef, useState } from "react";
-import { type BlockViewProps, Button, ErrorNote, IconButton, type PluginBlock } from "@trame/web-api";
-import { execute, interrupt, setPreferredKernel, usePreferredKernel } from "./api";
+import { type BlockViewProps, Button, ErrorNote, IconButton, type PluginBlock, useResolvedTheme } from "@trame/web-api";
+import { execute, interrupt, noteCellRan, setPreferredKernel, usePreferredKernel } from "./api";
 import { editCell, markCell, neighbourCell, registerCell, selectCell, useSelectedCell } from "./cell-mode";
 import { applyEvent, CellOutputs, type RunState, storable } from "./cell-output";
 import { CodeEditor } from "./CodeEditor";
-import type { CodeCell } from "./types";
+import { dropCell, setCellSource } from "./notebook";
+import type { CellRun, CodeCell } from "./types";
 
 type CodeB = CodeCell;
+
+/** PyCharm's run time: 52ms, 27s 329ms, 2m 5s */
+export function duration(ms: number): string {
+  const total = Math.round(ms);
+  if (total < 1000) return `${total}ms`;
+  if (total < 60_000) return `${Math.floor(total / 1000)}s ${total % 1000}ms`;
+  const s = Math.round(total / 1000);
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+// under the source, as PyCharm: ✓ [5] 52ms after a run, a spinner and a live clock during one
+function RunStatus({ run, count, since }: { run?: CellRun | null; count?: number | null; since: number | null }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (since == null) return;
+    const t = setInterval(() => tick((n) => n + 1), 97);
+    return () => clearInterval(t);
+  }, [since]);
+  if (since == null && !run) return null;
+  return (
+    <div className="flex items-center gap-1.5 px-3 pb-1 font-mono text-[11px] text-ink-faint">
+      {since != null
+        ? (
+          <>
+            <span className="inline-block h-2.5 w-2.5 animate-spin rounded-full border-[1.5px] border-ink-faint border-t-transparent" />
+            <span>{duration(performance.now() - since)}</span>
+          </>
+        )
+        : run && (
+          <span title={`${run.ok ? "ran" : "failed"} at ${new Date(run.at).toLocaleString()}`} className="flex items-center gap-1.5">
+            <span className={run.ok ? "text-active" : "text-blocked"}>{run.ok ? "✓" : "✗"}</span>
+            {count != null && <span>[{count}]</span>}
+            <span>{duration(run.ms)}</span>
+          </span>
+        )}
+    </div>
+  );
+}
 
 function CodeBlock({ block: raw, enabled, onPatch, onRemove, onInsert, onOpenSettings }: BlockViewProps) {
   const block = raw as CodeB;
@@ -15,7 +54,9 @@ function CodeBlock({ block: raw, enabled, onPatch, onRemove, onInsert, onOpenSet
   const [run, setRun] = useState<RunState | null>(null); // live outputs while running, else the block's
   const [running, setRunning] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [since, setSince] = useState<number | null>(null); // when the kernel started this run
   const kernel = usePreferredKernel();
+  const theme = useResolvedTheme();
   const id = block.id ?? "";
   const selected = useSelectedCell() === id;
   const lastKey = useRef<{ key: string; at: number } | null>(null);
@@ -26,6 +67,9 @@ function CodeBlock({ block: raw, enabled, onPatch, onRemove, onInsert, onOpenSet
   // a cell edited elsewhere (another device, an agent) shows its new source
   useEffect(() => setDraft(block.source), [block.source]);
   useEffect(() => () => abort.current?.abort(), []);
+  // the notebook-wide lint reads every cell's live text
+  useEffect(() => setCellSource(id, draft), [id, draft]);
+  useEffect(() => () => dropCell(id), [id]);
 
   const commitSource = () => {
     if (draft !== block.source) onPatch({ source: draft });
@@ -40,22 +84,30 @@ function CodeBlock({ block: raw, enabled, onPatch, onRemove, onInsert, onOpenSet
     setRun(state);
     const ctl = new AbortController();
     abort.current = ctl;
+    let began = performance.now();
+    let timing: CellRun | null = null;
+    setSince(began);
     try {
-      await execute(draft, kernel, (ev) => {
+      await execute(draft, kernel, theme, (ev) => {
         if (ev.type === "start") {
           if (ev.kernel !== kernel) setPreferredKernel(ev.kernel);
           return;
         }
+        // queued behind another cell until the kernel echoes the input
+        if (ev.type === "input") setSince(began = performance.now());
+        if (ev.type === "reply") timing = { ms: ev.ms ?? performance.now() - began, ok: ev.status === "ok", at: new Date().toISOString() };
         state = applyEvent(state, ev);
         setRun(state);
       }, ctl.signal);
-      patchRef.current({ source: draft, outputs: storable(state.outputs), count: state.count });
+      patchRef.current({ source: draft, outputs: storable(state.outputs), count: state.count, run: timing });
     } catch (e) {
       if (!ctl.signal.aborted) setErr((e as Error).message);
     } finally {
       setRunning(false);
       setRun(null);
+      setSince(null);
       abort.current = null;
+      noteCellRan();
     }
   };
 
@@ -64,7 +116,7 @@ function CodeBlock({ block: raw, enabled, onPatch, onRemove, onInsert, onOpenSet
   useEffect(() =>
     registerCell(id, {
       run: () => execRef.current(),
-      clear: () => patchRef.current({ outputs: [], count: null }),
+      clear: () => patchRef.current({ outputs: [], count: null, run: null }),
     }), [id]);
 
   const stop = () => {
@@ -142,7 +194,7 @@ function CodeBlock({ block: raw, enabled, onPatch, onRemove, onInsert, onOpenSet
         <span className="hidden text-[10px] text-ink-faint group-hover/cell:inline">
           esc · a/b insert · dd delete · ⇧⏎ run next
         </span>
-        <Button variant="chip" size="sm" className="shrink-0" title="clear outputs" disabled={!block.outputs?.length || running} onClick={() => onPatch({ outputs: [], count: null })}>
+        <Button variant="chip" size="sm" className="shrink-0" title="clear outputs" disabled={!block.outputs?.length || running} onClick={() => onPatch({ outputs: [], count: null, run: null })}>
           clear
         </Button>
         <IconButton tone="danger" onClick={onRemove} title="remove the cell (d d)" className="shrink-0 rounded px-1 hover:bg-panel">
@@ -150,6 +202,7 @@ function CodeBlock({ block: raw, enabled, onPatch, onRemove, onInsert, onOpenSet
         </IconButton>
       </div>
       <CodeEditor
+        cellId={id}
         value={draft}
         onChange={setDraft}
         onBlur={commitSource}
@@ -157,6 +210,7 @@ function CodeBlock({ block: raw, enabled, onPatch, onRemove, onInsert, onOpenSet
         onRunNext={runAndAdvance}
         onEscape={() => selectCell(id)}
       />
+      <RunStatus run={block.run} count={block.count} since={running ? since : null} />
       {err && <ErrorNote className="mx-2 my-1.5">{err}</ErrorNote>}
       <CellOutputs outputs={outputs} />
     </div>

@@ -12,7 +12,10 @@ export type CellOutput =
   }
   | { output_type: "error"; ename: string; evalue: string; traceback: string[] };
 
-export type CodeCell = { type: "code"; source: string; outputs?: CellOutput[]; count?: number | null; id?: string };
+/** the last run: how long the kernel took, whether it raised, when it finished */
+export type CellRun = { ms: number; ok: boolean; at: string };
+
+export type CodeCell = { type: "code"; source: string; outputs?: CellOutput[]; count?: number | null; run?: CellRun | null; id?: string };
 
 /** a page block as this plugin reads it */
 export type PageBlock = Block | CodeCell;
