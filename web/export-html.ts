@@ -1,6 +1,7 @@
 // A page with cells as one standalone HTML document: text, code and outputs, both themes.
 import type { CellOutput, PageBlock } from "./types";
-import { ansiRuns, outputTheme, pickMime } from "./cell-output";
+import { ansiRuns, imageSize, outputTheme, pickMime } from "./cell-output";
+import { plotlyFigure, plotlyHtml } from "./plotly";
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
 
@@ -20,11 +21,16 @@ const ansiHtml = (text: string) => ansiRuns(text).map((r) => (r.style ? `<span s
 function output(o: CellOutput): string {
   if (o.output_type === "stream") return `<pre class="out ${o.name}">${ansiHtml(o.text)}</pre>`;
   if (o.output_type === "error") return `<pre class="out error">${ansiHtml(o.traceback.length ? o.traceback.join("\n") : `${o.ename}: ${o.evalue}`)}</pre>`;
+  const plot = plotlyFigure(o.data);
+  if (plot) return `<div class="rich">${plotlyHtml(plot)}</div>`;
   const picked = pickMime(o.data);
   if (!picked) return "";
   const [mime, value] = picked;
   if (mime === "text/html" || mime === "image/svg+xml") return `<div class="rich">${value}</div>`;
-  if (mime === "image/png" || mime === "image/jpeg") return `<img src="data:${mime};base64,${value.replace(/\s/g, "")}" alt="">`;
+  if (mime === "image/png" || mime === "image/jpeg") {
+    const { width } = imageSize(o.metadata, mime);
+    return `<img src="data:${mime};base64,${value.replace(/\s/g, "")}"${width ? ` width="${width}"` : ""} alt="">`;
+  }
   if (mime === "text/plain" || mime === "text/markdown") return `<pre class="out">${ansiHtml(value)}</pre>`;
   return `<pre class="out">[${esc(mime)}]</pre>`;
 }

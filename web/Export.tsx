@@ -5,6 +5,8 @@ import { clearAll, runAll } from "./cell-mode";
 import { createReport, interrupt, type Kernel, listKernels, readNotebook, restart, setPreferredKernel, usePreferredKernel } from "./api";
 import { pageToHtml } from "./export-html";
 import { KernelMenu } from "./KernelMenu";
+import { relint, useLintError } from "./notebook";
+import { VariablesButton } from "./Variables";
 import type { CellOutput, PageBlock } from "./types";
 
 
@@ -27,6 +29,9 @@ function KernelBar({ cells }: { cells: number }) {
     return () => clearInterval(t);
     // oxlint-disable-next-line react-hooks/exhaustive-deps -- polls the kernel list and its busy state
   }, [kernel]);
+  const lintError = useLintError();
+  // missing modules depend on the kernel's environment
+  useEffect(relint, [kernel]);
   const current = kernels?.find((k) => k.id === kernel);
   const busy = runningAll || current?.state === "busy";
   const fail = (e: Error) => setError(e.message);
@@ -51,14 +56,16 @@ function KernelBar({ cells }: { cells: number }) {
       <Button
         variant="ghost"
         size="sm"
-        title="restart the kernel: its variables are lost, outputs stay"
+        title="restart the kernel with its current settings: its variables are lost, outputs stay"
         disabled={!kernel}
-        onClick={() => kernel && (cancel.current = true, restart(kernel).then(load).catch(fail))}
+        onClick={() => kernel && (cancel.current = true, restart(kernel).then((id) => (setPreferredKernel(id), load())).catch(fail))}
       >
         ↻ Restart
       </Button>
       <Button variant="ghost" size="sm" onClick={() => void clearAll()} disabled={cells === 0 || runningAll}>⌫ Clear outputs</Button>
+      <VariablesButton kernel={kernel} />
       {error && kernels && <span className="text-blocked">{error}</span>}
+      {lintError && <span className="text-paused" title={lintError}>inspections off: {lintError}</span>}
     </>
   );
 }

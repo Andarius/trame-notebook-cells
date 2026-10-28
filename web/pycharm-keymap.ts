@@ -1,4 +1,5 @@
 // PyCharm actions → CodeMirror commands, and PyCharm keystrokes ("shift ctrl UP") → CodeMirror keys.
+import { startCompletion } from "@codemirror/autocomplete";
 import {
   addCursorAbove,
   addCursorBelow,
@@ -26,6 +27,7 @@ import { foldCode, unfoldCode } from "@codemirror/language";
 import { findNext, findPrevious, gotoLine, openSearchPanel, selectNextOccurrence, selectSelectionMatches } from "@codemirror/search";
 import { EditorSelection } from "@codemirror/state";
 import type { Command, KeyBinding } from "@codemirror/view";
+import { optimizeCellImports, parameterInfo, quickDoc, reformatCell } from "./editor-insights";
 
 const toggleCase: Command = (view) => {
   const changes = view.state.changeByRange((range) => {
@@ -87,7 +89,21 @@ export const ACTIONS: Record<string, Command> = {
   $Redo: redo,
   $SelectAll: selectAll,
   EditorDuplicateUp: copyLineUp,
+  ReformatCode: reformatCell,
+  OptimizeImports: optimizeCellImports,
+  QuickJavaDoc: quickDoc,
+  ParameterInfo: parameterInfo,
+  CodeCompletion: startCompletion,
 };
+
+/** PyCharm's defaults for the cell-help actions; they stop the key reaching Trame's shortcuts (Ctrl+P search). */
+export const DEFAULT_BINDINGS: KeyBinding[] = [
+  { key: "Mod-Alt-l", run: reformatCell, preventDefault: true, stopPropagation: true },
+  { key: "Mod-Alt-o", run: optimizeCellImports, preventDefault: true, stopPropagation: true },
+  { key: "Ctrl-q", run: quickDoc, preventDefault: true, stopPropagation: true },
+  { key: "F1", run: quickDoc, preventDefault: true, stopPropagation: true },
+  { key: "Mod-p", run: parameterInfo, preventDefault: true, stopPropagation: true },
+];
 
 const KEYS: Record<string, string> = {
   up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight",
@@ -123,7 +139,7 @@ export function bindingsFor(actions: Record<string, string[]>): KeyBinding[] {
       const key = toCodeMirrorKey(stroke);
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      out.push({ key, run, preventDefault: true });
+      out.push({ key, run, preventDefault: true, stopPropagation: true }); // past Trame's own shortcuts
     }
   }
   return out;

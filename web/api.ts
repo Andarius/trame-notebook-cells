@@ -1,4 +1,5 @@
 // Client of /api/plugins/notebook-cells: kernels, streamed execution, settings, export.
+import type { RuffDiagnostic } from "./analysis";
 import type { CellEvent } from "./cell-output";
 import { store } from "./store";
 
@@ -69,13 +70,21 @@ export const pypiVersions = (name: string) => get<PyPiProject>("/pypi", { name }
 export const removeProjectKernel = (name: string) => postJson<{ ok: boolean }>("/project-kernel/remove", { name });
 export const shutdownKernel = (kernel: string) => postJson<{ ok: boolean }>("/shutdown", { kernel });
 export const interrupt = (kernel: string) => postJson<{ ok: boolean }>("/interrupt", { kernel });
-export const restart = (kernel: string) => postJson<{ ok: boolean }>("/restart", { kernel });
+// may come back as a new kernel (one started from the current spec)
+export const restart = (kernel: string) => postJson<{ id: string }>("/restart", { kernel }).then((r) => r.id);
 export const readNotebook = (path: string) =>
   get<{ path: string; cells: { cell_type: string; source: string; outputs?: unknown[]; count?: number | null }[] }>("/notebook", { path });
 
 // Runs `code` and hands every event to `onEvent` as it streams; resolves when the kernel is idle again.
-export async function execute(code: string, kernel: string | null, onEvent: (ev: CellEvent) => void, signal?: AbortSignal) {
-  const res = await post("/execute", { code, kernel }, signal);
+// `theme` colours the kernel's "trame" plot style like the page
+export async function execute(
+  code: string,
+  kernel: string | null,
+  theme: "dark" | "light",
+  onEvent: (ev: CellEvent) => void,
+  signal?: AbortSignal,
+) {
+  const res = await post("/execute", { code, kernel, theme }, signal);
   if (!res.ok) await json(res);
   if (!res.body) throw new Error("no output stream");
   const reader = res.body.getReader();
@@ -99,11 +108,34 @@ export async function execute(code: string, kernel: string | null, onEvent: (ev:
 // The kernel the page's cells run on, shared by every cell in the window.
 const preferred = store<string | null>(null);
 export const setPreferredKernel = preferred.set;
+export const preferredKernel = preferred.get;
 export const usePreferredKernel = preferred.use;
 
 export const createReport = (title: string, html: string) => postJson<{ id: string }>("/api/reports", { title, html });
 
 export const readPyCharmKeymap = () => get<PyCharmKeymap>("/pycharm-keymap");
+
+// ruff over the page's cells, read as one notebook
+export const lintCells = (cells: string[]) => postJson<{ diagnostics: RuffDiagnostic[] }>("/lint", { cells }).then((r) => r.diagnostics);
+export const formatCode = (code: string) => postJson<{ code: string }>("/format", { code }).then((r) => r.code);
+export const optimizeImports = (cells: string[], index: number) =>
+  postJson<{ code: string }>("/optimize-imports", { cells, index }).then((r) => r.code);
+
+// what the running kernel knows; cursors and ranges count code points
+export type Completion = { text: string; type?: string | null; signature?: string | null };
+export const complete = (kernel: string, code: string, cursor: number, signal?: AbortSignal) =>
+  post("/complete", { kernel, code, cursor }, signal).then((r) => json<{ matches: Completion[]; from: number; to: number }>(r));
+export const inspect = (kernel: string, code: string, cursor: number) =>
+  postJson<{ found: boolean; text: string | null }>("/inspect", { kernel, code, cursor });
+export type Variable = { name: string; type: string; shape: string | null; len: number | null; value: string };
+export const listVariables = (kernel: string) => postJson<{ variables: Variable[] }>("/variables", { kernel }).then((r) => r.variables);
+export const missingModules = (kernel: string, names: string[]) =>
+  postJson<{ missing: string[] }>("/modules", { kernel, names }).then((r) => r.missing);
+
+// Bumped after every cell run, so views of the kernel's state refresh.
+const runs = store(0);
+export const noteCellRan = () => runs.set(runs.get() + 1);
+export const useCellRuns = runs.use;
 
 // The editor keymap imported from PyCharm, shared by every cell; loaded once from the settings.
 const keymap = store<ImportedKeymap | null>(null, () => void getSettings().then((s) => keymap.set(s.keymap ?? null)).catch(() => {}));

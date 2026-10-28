@@ -1,5 +1,5 @@
 // CodeMirror 6 for a python cell: highlighting, auto-indent, bracket matching, run on ⇧⏎/⌘⏎.
-import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
+import { closeBrackets, closeBracketsKeymap, completionStatus } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { python, pythonLanguage } from "@codemirror/lang-python";
 import { PostgreSQL } from "@codemirror/lang-sql";
@@ -19,7 +19,9 @@ import { parseMixed } from "@lezer/common";
 import { tags } from "@lezer/highlight";
 import { useEffect, useRef } from "react";
 import { useCellKeymap } from "./api";
-import { bindingsFor } from "./pycharm-keymap";
+import { applyDiagnostics, dismissDoc, foldImports, insights } from "./editor-insights";
+import { useCellDiagnostics } from "./notebook";
+import { bindingsFor, DEFAULT_BINDINGS } from "./pycharm-keymap";
 
 // A triple-quoted string that reads like a query is parsed as PostgreSQL inside the python tree.
 const SQL_START = /^\s*(select|with|insert|update|delete|create|alter|drop|explain|merge)\b/i;
@@ -72,7 +74,8 @@ const theme = EditorView.theme({
 });
 
 export function CodeEditor(
-  { value, onChange, onBlur, onRun, onRunNext, onEscape, placeholder = "python…" }: {
+  { cellId, value, onChange, onBlur, onRun, onRunNext, onEscape, placeholder = "python…" }: {
+    cellId: string;
     value: string;
     onChange: (v: string) => void;
     onBlur: () => void;
@@ -86,6 +89,7 @@ export function CodeEditor(
   const imported = useCellKeymap();
   const keys = useRef(new Compartment());
   const view = useRef<EditorView | null>(null);
+  const diagnostics = useCellDiagnostics(cellId);
   // handlers change every render; the editor is built once
   const handlers = useRef({ onChange, onBlur, onRun, onRunNext, onEscape });
   handlers.current = { onChange, onBlur, onRun, onRunNext, onEscape };
@@ -115,10 +119,16 @@ export function CodeEditor(
         Prec.highest(keymap.of([
           { key: "Mod-Enter", run },
           { key: "Shift-Enter", run: () => (handlers.current.onRunNext(), true) },
-          { key: "Escape", run: (v) => (v.contentDOM.blur(), handlers.current.onEscape(), true) },
+          {
+            key: "Escape",
+            // a completion list or a doc tooltip closes first
+            run: (v) => completionStatus(v.state) ? false : dismissDoc(v) || (v.contentDOM.blur(), handlers.current.onEscape(), true),
+          },
         ])),
         // imported PyCharm shortcuts sit above the defaults, below running the cell
         keys.current.of(Prec.high(keymap.of(imported ? bindingsFor(imported.actions) : []))),
+        keymap.of(DEFAULT_BINDINGS),
+        insights,
         keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...foldKeymap, indentWithTab]),
         EditorView.updateListener.of((u) => {
           if (u.docChanged) handlers.current.onChange(u.state.doc.toString());
@@ -128,6 +138,7 @@ export function CodeEditor(
     });
     const v = new EditorView({ state, parent: host.current });
     view.current = v;
+    foldImports(v);
     return () => {
       v.destroy();
       view.current = null;
@@ -149,6 +160,12 @@ export function CodeEditor(
     const current = v.state.doc.toString();
     if (current !== value) v.dispatch({ changes: { from: 0, to: current.length, insert: value } });
   }, [value]);
+
+  // the notebook's lint pass, if it was computed on this very text
+  useEffect(() => {
+    const v = view.current;
+    if (v && diagnostics && diagnostics.source === v.state.doc.toString()) applyDiagnostics(v, diagnostics.items);
+  }, [diagnostics]);
 
   return <div ref={host} className="w-full" />;
 }

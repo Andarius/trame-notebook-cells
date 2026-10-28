@@ -1,7 +1,10 @@
 // Cell outputs: the nbformat shapes a kernel produces, reduced from execution events and
-// rendered as blocks. Rich HTML runs in a sandboxed iframe themed like the page.
-import { useEffect, useRef, useState } from "react";
+// rendered as blocks. pandas tables become a grid; other rich HTML runs in a sandboxed iframe themed like the page.
+import { useEffect, useMemo, useRef, useState } from "react";
 import { type Resolved, useResolvedTheme } from "@trame/web-api";
+import { parseFrame } from "./dataframe";
+import { DataFrameView } from "./DataFrameView";
+import { plotlyFigure, plotlyHtml } from "./plotly";
 import type { CellOutput } from "./types";
 
 // one execution event, as /api/plugins/notebook-cells/execute streams them
@@ -17,7 +20,7 @@ export type CellEvent =
   }
   | { type: "error"; ename: string; evalue: string; traceback: string[] }
   | { type: "clear_output"; wait?: boolean }
-  | { type: "reply"; status: string; count: number | null }
+  | { type: "reply"; status: string; count: number | null; ms?: number | null }
   | { type: "failed"; error: string };
 
 export const MAX_OUTPUT_BYTES = 512 * 1024; // like an html block; a cell's outputs sync with the page
@@ -229,7 +232,7 @@ function SandboxedHtml({ html, theme }: { html: string; theme: Resolved }) {
       srcDoc={srcDoc}
       title="cell output"
       className="block w-full border-0 bg-transparent"
-      style={{ height }}
+      style={{ height, colorScheme: theme }}
     />
   );
 }
@@ -244,14 +247,29 @@ export function pickMime(data: Record<string, string>): [string, string] | null 
   return first ? [first, data[first]] : null;
 }
 
-function RichOutput({ data, theme }: { data: Record<string, string>; theme: Resolved }) {
+/** The display size Jupyter asks for: retina PNGs are twice their CSS size. */
+export function imageSize(metadata: Record<string, unknown> | undefined, mime: string): { width?: number; height?: number } {
+  const m = metadata?.[mime] as { width?: unknown; height?: unknown } | undefined;
+  const num = (v: unknown) => (typeof v === "number" && v > 0 ? v : undefined);
+  return { width: num(m?.width), height: num(m?.height) };
+}
+
+function RichOutput({ data, metadata, theme }: { data: Record<string, string>; metadata?: Record<string, unknown>; theme: Resolved }) {
   const picked = pickMime(data);
+  const html = picked?.[0] === "text/html" ? picked[1] : null;
+  const frame = useMemo(() => (html ? parseFrame(html) : null), [html]);
+  // plotly's own text/html needs the notebook's require.js: draw its figure JSON instead
+  // memoized: its random element id would change the srcdoc, and reload the frame, on every render
+  const plot = useMemo(() => { const fig = plotlyFigure(data); return fig && plotlyHtml(fig); }, [data]);
+  if (plot) return <SandboxedHtml html={plot} theme={theme} />;
   if (!picked) return null;
   const [mime, value] = picked;
+  if (frame) return <DataFrameView frame={frame} />;
   if (mime === "text/html") return <SandboxedHtml html={value} theme={theme} />;
   if (mime === "image/svg+xml") return <SandboxedHtml html={value} theme={theme} />;
   if (mime === "image/png" || mime === "image/jpeg") {
-    return <img src={`data:${mime};base64,${value.replace(/\s/g, "")}`} alt="" className="block max-w-full rounded-md" />;
+    const { width } = imageSize(metadata, mime);
+    return <img src={`data:${mime};base64,${value.replace(/\s/g, "")}`} alt="" style={{ width: width ? `${width}px` : "auto" }} className="block h-auto max-w-full rounded-md" />;
   }
   if (mime === "text/plain" || mime === "text/markdown") return <AnsiPre text={value} />;
   return <AnsiPre text={`[${mime} output — not renderable here]`} />;
@@ -267,7 +285,7 @@ export function CellOutputs({ outputs }: { outputs: CellOutput[] }) {
         if (o.output_type === "error") {
           return <AnsiPre key={i} text={o.traceback.length ? o.traceback.join("\n") : `${o.ename}: ${o.evalue}`} tone="error" />;
         }
-        return <RichOutput key={i} data={o.data} theme={theme} />;
+        return <RichOutput key={i} data={o.data} metadata={o.metadata} theme={theme} />;
       })}
     </div>
   );
