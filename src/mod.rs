@@ -20,8 +20,10 @@ mod uv;
 
 pub const ID: &str = "notebook-cells";
 // keep in step with version.ts (version_test.ts checks it)
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.3.0";
 const REPO: &str = "Andarius/trame-notebook-cells";
+// the Jupyter mark, for pages holding code cells
+const JUPYTER_ICON: &str = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path fill='%23F37726' d='M3.5 13C6 4.5 26 4.5 28.5 13C23 9 9 9 3.5 13Z'/><path fill='%23F37726' d='M3.5 19C6 27.5 26 27.5 28.5 19C23 23 9 23 3.5 19Z'/><circle cx='26' cy='5' r='2.4' fill='%23767677'/><circle cx='6.5' cy='27' r='2.6' fill='%23989798'/><circle cx='7' cy='5.5' r='1.4' fill='%23616262'/></svg>";
 
 fn settings_view(slice: &Value) -> Value {
     json!({
@@ -926,6 +928,9 @@ impl Plugin for NotebookCells {
     }
     fn version(&self) -> Option<(&'static str, &'static str)> {
         Some((VERSION, REPO))
+    }
+    fn page_icon(&self) -> Option<(&'static str, &'static str)> {
+        Some(("code", JUPYTER_ICON))
     }
     fn sanitize(&self, raw: &Value, _current: &Value) -> Value {
         sanitize(raw)
