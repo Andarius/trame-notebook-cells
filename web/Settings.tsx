@@ -1,10 +1,17 @@
-// Notebook cells settings: the Jupyter server the page's cells run on. The token is write-only.
+// Notebook cells settings: the Jupyter server the page's cells run on (Trame's own without a URL). The token is write-only.
 import { type ReactNode, useEffect, useState } from "react";
 import { Button, Field, FIELD_LABEL, TextInput } from "@trame/web-api";
 import { ACTIONS } from "./pycharm-keymap";
-import { getSettings, listKernels, readPyCharmKeymap, saveSettings, setCellKeymap, type Settings } from "./api";
+import { getSettings, listKernels, type Managed, readPyCharmKeymap, saveSettings, setCellKeymap, type Settings } from "./api";
 
 const Note = ({ children }: { children: ReactNode }) => <span className="text-[11.5px] text-ink-muted">{children}</span>;
+
+const managedNote = (m: Managed, enabled: boolean) => {
+  if (!enabled) return "Trame starts a Jupyter server once the plugin is on.";
+  if (m.state === "ready") return `Trame runs a Jupyter server at ${m.url}.`;
+  if (m.state === "failed") return `✗ Trame's Jupyter server did not start: ${m.error} (retried every minute)`;
+  return "Trame is starting its Jupyter server (the first start downloads it)…";
+};
 
 export function NotebookCellsSettings() {
   const [s, setS] = useState<Settings | null>(null);
@@ -16,6 +23,13 @@ export function NotebookCellsSettings() {
   useEffect(() => {
     getSettings().then((v) => (setS(v), setUrl(v.serverUrl))).catch(() => {});
   }, []);
+  // follow the managed server until it is up
+  const pending = s?.enabled && s.managed && s.managed.state !== "ready";
+  useEffect(() => {
+    if (!pending) return;
+    const t = setInterval(() => getSettings().then(setS).catch(() => {}), 2000);
+    return () => clearInterval(t);
+  }, [pending]);
 
   const save = () =>
     saveSettings({ serverUrl: url, ...(token ? { token } : {}) }).then((v) => {
@@ -43,17 +57,18 @@ export function NotebookCellsSettings() {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-[11.5px] text-ink-muted">
-        Cells run on a Jupyter Server you start yourself, e.g. <code className="font-mono">jupyter lab --no-browser</code>. Paste its URL and token
-        (<code className="font-mono">jupyter server list</code>).
+        Leave the URL empty and Trame runs a Jupyter server for the cells (fetched with <code className="font-mono">uv</code>). To use your own
+        instead, paste its URL and token (<code className="font-mono">jupyter server list</code>).
       </p>
+      {s?.managed && <Note>{managedNote(s.managed, s.enabled)}</Note>}
       <Field label="SERVER URL">
-        <TextInput value={url} placeholder="http://127.0.0.1:8888" onChange={(e) => setUrl(e.target.value)} />
+        <TextInput value={url} placeholder="empty: Trame runs one" onChange={(e) => setUrl(e.target.value)} />
       </Field>
       <Field label="TOKEN" hint={s?.hasToken && "stored, leave blank to keep"}>
         <TextInput type="password" value={token} autoComplete="off" onChange={(e) => setToken(e.target.value)} />
       </Field>
       <div className="flex items-center gap-2">
-        <Button size="sm" onClick={save} disabled={!url.trim()}>Save</Button>
+        <Button size="sm" onClick={save}>Save</Button>
         <Button size="sm" onClick={test} disabled={!s?.enabled}>Test connection</Button>
         {status && <Note>{status}</Note>}
       </div>

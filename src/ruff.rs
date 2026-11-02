@@ -2,7 +2,6 @@
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::io::Write as _;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 // pyflakes, pycodestyle's error classes and unused arguments: what PyCharm flags while typing
@@ -10,20 +9,10 @@ const SELECT: &str = "E4,E7,E9,F,ARG";
 
 /// ruff on PATH (or the usual user bin dirs), else `uv tool run ruff`.
 fn ruff() -> Result<Command> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let find = |name: &str| {
-        super::on_path(name).or_else(|| {
-            let home = home.as_ref()?;
-            [".local/bin", ".cargo/bin"]
-                .iter()
-                .map(|d| home.join(d).join(name))
-                .find(|p| p.is_file())
-        })
-    };
-    if let Some(bin) = find("ruff") {
+    if let Some(bin) = super::user_bin("ruff") {
         return Ok(Command::new(bin));
     }
-    let uv = find("uv").context("ruff not found (install it, or uv to fetch it)")?;
+    let uv = super::user_bin("uv").context("ruff not found (install it, or uv to fetch it)")?;
     let mut cmd = Command::new(uv);
     cmd.args(["tool", "run", "ruff"]);
     Ok(cmd)
