@@ -1,5 +1,5 @@
 // Notebook cells: a page's `code` blocks run on a Jupyter kernel. The kernel lives in a
-// Jupyter Server the user points the plugin at; execution streams back as NDJSON events.
+// Jupyter Server the user points the plugin at, else one the plugin runs itself; execution streams back as NDJSON events.
 use crate::plugins::api::{Native, Plugin, RouteFuture, blocking, json_response, settings};
 use anyhow::{Context, Result, anyhow, bail};
 use axum::{
@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
 
 mod introspect;
+mod managed;
 mod pycharm;
 mod ruff;
 mod uv;
@@ -31,6 +32,7 @@ fn settings_view(slice: &Value) -> Value {
         "serverUrl": slice["serverUrl"].as_str().unwrap_or(""),
         "hasToken": slice["token"].as_str().is_some_and(|t| !t.is_empty()),
         "keymap": slice["keymap"],
+        "managed": managed::view(slice),
     })
 }
 
@@ -98,7 +100,7 @@ impl Server {
             .unwrap_or("")
             .trim_end_matches('/');
         if url.is_empty() {
-            bail!("no Jupyter server configured");
+            return managed::server();
         }
         Ok(Self {
             url: url.to_owned(),
@@ -270,6 +272,17 @@ fn on_path(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|d| d.join(name))
         .find(|p| p.is_file())
+}
+
+/// On PATH, else in `~/.local/bin` or `~/.cargo/bin` (a desktop launch often lacks them on PATH).
+fn user_bin(name: &str) -> Option<PathBuf> {
+    on_path(name).or_else(|| {
+        let home = PathBuf::from(std::env::var_os("HOME")?);
+        [".local/bin", ".cargo/bin"]
+            .iter()
+            .map(|d| home.join(d).join(name))
+            .find(|p| p.is_file())
+    })
 }
 
 fn jupyter_data_dir() -> PathBuf {
@@ -938,6 +951,15 @@ impl Plugin for NotebookCells {
     fn settings_view(&self, slice: &Value) -> Value {
         settings_view(slice)
     }
+    fn start(&'static self, native: Native) -> Option<tokio::task::JoinHandle<()>> {
+        Some(managed::run(native))
+    }
+    fn on_enabled(&'static self, _native: &Native) {
+        managed::wake();
+    }
+    fn stop(&'static self) {
+        managed::stop();
+    }
     fn route(
         &'static self,
         native: Native,
@@ -978,7 +1000,7 @@ mod tests {
         let view = settings_view(&json!({"token": "secret", "serverUrl": "http://h"}));
         assert_eq!(
             view,
-            json!({"enabled": false, "serverUrl": "http://h", "hasToken": true, "keymap": null})
+            json!({"enabled": false, "serverUrl": "http://h", "hasToken": true, "keymap": null, "managed": null})
         );
     }
 

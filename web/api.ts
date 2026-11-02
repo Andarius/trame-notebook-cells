@@ -6,7 +6,9 @@ import { store } from "./store";
 const BASE = "/api/plugins/notebook-cells";
 
 export type ImportedKeymap = { name: string; actions: Record<string, string[]>; importedAt?: string };
-export type Settings = { enabled: boolean; serverUrl: string; hasToken: boolean; keymap: ImportedKeymap | null };
+// `managed`: the server Trame runs itself while no URL is set (null when one is)
+export type Managed = { state: "off" | "starting" | "ready" | "failed"; url: string | null; error: string | null };
+export type Settings = { enabled: boolean; serverUrl: string; hasToken: boolean; keymap: ImportedKeymap | null; managed: Managed | null };
 export type PyCharmKeymap = { ide: string | null; keymap: string; chain: string[]; missing: string[]; actions: Record<string, string[]> };
 export type Kernel = {
   id: string;

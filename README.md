@@ -20,9 +20,9 @@ just plugins   # composes src/mod.rs into trame-local and web/ into the plugins 
 just dev       # or rebuild and restart your Trame build
 ```
 
-Start a Jupyter server yourself (`jupyter lab --no-browser`), enable the plugin under Plugins and paste the server's URL and token. "/code" in a page adds a cell. While the plugin is off, cells keep showing their source and outputs.
+Enable the plugin under Plugins: with no server URL set, it runs its own Jupyter server (`uv tool run --from jupyter-server --with ipykernel`, on a free localhost port with a random token) while it is on, and stops it when Trame exits. To use your own server instead (`jupyter lab --no-browser`), paste its URL and token in the plugin's settings. "/code" in a page adds a cell. While the plugin is off, cells keep showing their source and outputs.
 
-The backend talks to that Jupyter server (REST and kernel WebSockets) and to PyPI when the wizard looks up a package. Inspections, reformat and optimize imports run `ruff` (from PATH, `~/.local/bin`, `~/.cargo/bin`, else `uv tool run ruff`) on the cells' text; completion, docs, variables and the import check ask the running kernel and never start one. Project kernels write kernel specs under `~/.local/share/jupyter/kernels/trame-<name>`, so they need the Jupyter server on the same machine. The PyCharm import reads your IDE's keymap files and never writes them. Cells are page blocks: they sync like the rest of the page.
+The backend talks to the Jupyter server (REST and kernel WebSockets) and to PyPI when the wizard looks up a package. Inspections, reformat and optimize imports run `ruff` (from PATH, `~/.local/bin`, `~/.cargo/bin`, else `uv tool run ruff`) on the cells' text; completion, docs, variables and the import check ask the running kernel and never start one. Project kernels write kernel specs under `~/.local/share/jupyter/kernels/trame-<name>`, so they need the Jupyter server on the same machine. The PyCharm import reads your IDE's keymap files and never writes them. Cells are page blocks: they sync like the rest of the page.
 
 `src/mod.rs` is the backend, a native Rust module compiled into `trame-local` (it reaches Trame only through `crate::plugins::api`); `web/index.ts` is the frontend (via `@trame/web-api`). CodeMirror and Lezer come from Trame's `app/web/package.json`.
 
