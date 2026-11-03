@@ -77,7 +77,7 @@ export function NotebookCellsPageHeader({ page, onDone }: { page: PageDetail; on
   const [status, setStatus] = useState<string | null>(null);
   const content = page.content as PageBlock[];
   const cells = content.filter((b) => b.type === "code").length;
-  if (!enabled && cells === 0) return null;
+  if (cells === 0) return null;
 
   const exportHtml = () =>
     createReport(page.title, pageToHtml(page.title, content))
